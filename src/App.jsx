@@ -8,6 +8,7 @@ import { SwingDetector } from './services/swingDetector';
 import { SweepDetector } from './services/sweepDetector';
 import { MarketStructureDetector } from './services/marketStructure';
 import { BreakoutDetector } from './services/breakoutDetector';
+import { TradeSignalEngine } from './services/tradeSignalEngine';
 
 import ChartView from './components/ChartView';
 import TimeframeSelector from './components/TimeframeSelector';
@@ -17,6 +18,7 @@ import SessionLevelPanel from './components/SessionLevelPanel';
 import SwingPanel from './components/SwingPanel';
 import SweepPanel from './components/SweepPanel';
 import MarketStructurePanel from './components/MarketStructurePanel';
+import SignalPanel from './components/SignalPanel';
 import Settings from './components/Settings';
 
 export default function App() {
@@ -28,8 +30,6 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState(WS_STATUS.DISCONNECTED);
   const [error, setError] = useState(null);
   const [currentPrice, setCurrentPrice] = useState(null);
-  
-  // Chart Data State
   const [candles, setCandles] = useState([]);
   const [sessionLevels, setSessionLevels] = useState({});
   const [sessionStatus, setSessionStatus] = useState({});
@@ -37,9 +37,9 @@ export default function App() {
   const [sweeps, setSweeps] = useState([]);
   const [msEvents, setMsEvents] = useState([]);
   const [breakouts, setBreakouts] = useState([]);
+  const [tradeSignals, setTradeSignals] = useState([]);
   const [trend, setTrend] = useState('undefined');
 
-  // Services Refs
   const socketRef = useRef(null);
   const cbRef = useRef(null);
   const tfRef = useRef(null);
@@ -48,14 +48,64 @@ export default function App() {
   const sweepRef = useRef(null);
   const msRef = useRef(null);
   const brkRef = useRef(null);
+  const signalRef = useRef(null);
+  const activeTimeframeRef = useRef('m1');
 
-  // Initialize Services
+  useEffect(() => {
+    activeTimeframeRef.current = activeTimeframe;
+  }, [activeTimeframe]);
+
+  const handlePriceTouch = useCallback((price, timestamp) => {
+    if (!signalRef.current) return;
+    const hits = signalRef.current.checkLimitHits(price, timestamp);
+    if (hits.length > 0) setTradeSignals(signalRef.current.getHistory());
+  }, []);
+
+  const analyzeTimeframe = useCallback((completedCandles, lastClosedCandle) => {
+    if (!swRef.current || !sweepRef.current || !msRef.current || !brkRef.current) return;
+
+    const analysisCandles = mergeCandles(completedCandles, lastClosedCandle);
+    if (analysisCandles.length === 0) return;
+
+    const swingData = swRef.current.processCandles(analysisCandles);
+    setSwings(swingData);
+
+    const levels = slRef.current.getLevels();
+    const confirmedSwings = swingData?.confirmed || [];
+
+    const newSweeps = sweepRef.current.detect(lastClosedCandle, levels, confirmedSwings);
+    if (newSweeps.length > 0) setSweeps(sweepRef.current.getHistory());
+
+    const newMs = msRef.current.detect(lastClosedCandle, confirmedSwings);
+    if (newMs.length > 0) {
+      setMsEvents(msRef.current.getHistory());
+      setTrend(msRef.current.getTrend());
+    }
+
+    const newBrk = brkRef.current.detect(lastClosedCandle, levels, confirmedSwings, analysisCandles);
+    if (newBrk.length > 0) setBreakouts(brkRef.current.getHistory());
+
+    if (signalRef.current) {
+      const newSignals = signalRef.current.detect({
+        candle: lastClosedCandle,
+        candles: analysisCandles,
+        levels,
+        confirmedSwings,
+        sweeps: sweepRef.current.getHistory(),
+        msEvents: msRef.current.getHistory(),
+        breakouts: brkRef.current.getHistory(),
+        timeframe: activeTimeframeRef.current,
+      });
+
+      if (newSignals.length > 0) setTradeSignals(signalRef.current.getHistory());
+    }
+  }, []);
+
   useEffect(() => {
     const key = getApiKey();
     setApiKey(key);
     const sets = getSettings();
     setSettings(sets);
-    
     if (!key) setShowSettings(true);
 
     cbRef.current = new CandleBuilder();
@@ -65,13 +115,12 @@ export default function App() {
     sweepRef.current = new SweepDetector();
     msRef.current = new MarketStructureDetector();
     brkRef.current = new BreakoutDetector();
-
+    signalRef.current = new TradeSignalEngine();
     socketRef.current = new TwelveDataSocket();
 
-    // Data Pipeline Logic
-    // 1. Tick -> M1 Candle
     socketRef.current.onTick(tick => {
       setCurrentPrice(tick.price);
+      handlePriceTouch(tick.price, tick.timestamp);
       cbRef.current.processTick(tick);
     });
 
@@ -80,124 +129,58 @@ export default function App() {
       if (status === WS_STATUS.CONNECTED) setError(null);
     });
 
-    socketRef.current.onError((err) => {
-      setError(err);
-    });
+    socketRef.current.onError((err) => setError(err));
 
-    // 2. M1 Update -> UI (if M1 active) -> TF Aggregator
     cbRef.current.onCandleUpdate(m1Candle => {
-      if (activeTimeframe === 'm1') {
-        setCandles(cbRef.current.getAllCandles());
-      }
+      if (activeTimeframeRef.current === 'm1') setCandles(cbRef.current.getAllCandles());
       tfRef.current.processM1Candle(m1Candle, false);
     });
 
-    // 3. M1 Close -> SessionTracker -> Swing -> Detectors -> TF Aggregator
     cbRef.current.onCandleClose(closedM1 => {
       slRef.current.processCandle(closedM1);
       setSessionLevels(slRef.current.getLevels());
       setSessionStatus(slRef.current.getSessionStatus());
-
       tfRef.current.processM1Candle(closedM1, true);
-
-      // We run detectors on M1 if M1 is active TF, or always? 
-      // Market structure is usually analyzed on the active TF.
-      // Let's analyze on the active TF.
-      if (activeTimeframe === 'm1') {
-        analyzeTimeframe(cbRef.current.getCandles(), closedM1);
-      }
+      if (activeTimeframeRef.current === 'm1') analyzeTimeframe(cbRef.current.getCandles(), closedM1);
     });
 
-    // 4. TF Update
     ['m5', 'm15', 'h1'].forEach(tf => {
-      tfRef.current.onCandleUpdate(tf, (candle) => {
-        if (activeTimeframe === tf) {
-          setCandles(tfRef.current.getCandles(tf));
-        }
+      tfRef.current.onCandleUpdate(tf, () => {
+        if (activeTimeframeRef.current === tf) setCandles(tfRef.current.getCandles(tf));
       });
       tfRef.current.onCandleClose(tf, (closedCandle) => {
-        if (activeTimeframe === tf) {
-          const c = tfRef.current.getCandles(tf);
-          analyzeTimeframe(c.filter(candle => candle.time !== c[c.length - 1]?.time), closedCandle);
-        }
+        if (activeTimeframeRef.current === tf) analyzeTimeframe(tfRef.current.getCandles(tf), closedCandle);
       });
     });
 
     return () => {
       if (socketRef.current) socketRef.current.destroy();
     };
-  }, []);
+  }, [analyzeTimeframe, handlePriceTouch]);
 
-  // Analyze structure on candle close for active TF
-  const analyzeTimeframe = useCallback((completedCandles, lastClosedCandle) => {
-    // 1. Detect Swings
-    const swingData = swRef.current.processCandles(completedCandles);
-    setSwings(swingData);
-
-    const levels = slRef.current.getLevels();
-    const confirmedSwings = swingData?.confirmed || [];
-
-    // 2. Detect Sweeps
-    const newSweeps = sweepRef.current.detect(lastClosedCandle, levels, confirmedSwings);
-    if (newSweeps.length > 0) setSweeps(sweepRef.current.getHistory());
-
-    // 3. Detect BOS/CHoCH
-    const newMs = msRef.current.detect(lastClosedCandle, confirmedSwings);
-    if (newMs.length > 0) {
-      setMsEvents(msRef.current.getHistory());
-      setTrend(msRef.current.getTrend());
-    }
-
-    // 4. Detect Breakouts
-    const newBrk = brkRef.current.detect(lastClosedCandle, levels, confirmedSwings);
-    if (newBrk.length > 0) setBreakouts(brkRef.current.getHistory());
-  }, []);
-
-  // Connect WebSocket when API Key is set
   useEffect(() => {
     if (apiKey && socketRef.current && socketRef.current.getStatus() === WS_STATUS.DISCONNECTED) {
       socketRef.current.connect(apiKey, 'XAU/USD');
     }
   }, [apiKey]);
 
-  // Handle Timeframe Change
   useEffect(() => {
     if (!cbRef.current || !tfRef.current) return;
-    
-    let activeCandles = [];
-    if (activeTimeframe === 'm1') {
-      activeCandles = cbRef.current.getAllCandles();
-    } else {
-      activeCandles = tfRef.current.getCandles(activeTimeframe);
-    }
-    
+    const activeCandles = activeTimeframe === 'm1' ? cbRef.current.getAllCandles() : tfRef.current.getCandles(activeTimeframe);
     setCandles(activeCandles);
-    
-    // Re-run swing detector on all completed candles of this TF
-    const completed = activeTimeframe === 'm1' ? cbRef.current.getCandles() : 
-      activeCandles.filter(c => c.time !== activeCandles[activeCandles.length - 1]?.time);
-      
-    if (completed.length > 0) {
-      const swingData = swRef.current.processCandles(completed);
-      setSwings(swingData);
-    } else {
-      setSwings({ confirmed: [], candidates: [] });
-    }
+    const completed = activeTimeframe === 'm1' ? cbRef.current.getCandles() : activeCandles.filter(c => c.time !== activeCandles[activeCandles.length - 1]?.time);
+    if (completed.length > 0) setSwings(swRef.current.processCandles(completed));
+    else setSwings({ confirmed: [], candidates: [] });
   }, [activeTimeframe]);
 
   const handleSettingsSave = (newSettings) => {
     setSettings(newSettings);
+    saveSettings(newSettings);
     const key = getApiKey();
     setApiKey(key);
     setShowSettings(false);
-    
     if (swRef.current) swRef.current.setStrength(newSettings.swingStrength);
-    
-    if (key && socketRef.current) {
-      if (socketRef.current.getStatus() !== WS_STATUS.CONNECTED) {
-        socketRef.current.connect(key, 'XAU/USD');
-      }
-    }
+    if (key && socketRef.current && socketRef.current.getStatus() !== WS_STATUS.CONNECTED) socketRef.current.connect(key, 'XAU/USD');
   };
 
   return (
@@ -216,7 +199,6 @@ export default function App() {
       ) : (
         <>
           <TimeframeSelector active={activeTimeframe} onChange={setActiveTimeframe} />
-          
           <div className="chart-container">
             <ChartView
               candles={candles}
@@ -225,14 +207,15 @@ export default function App() {
               sweepEvents={sweeps}
               msEvents={msEvents}
               breakoutEvents={breakouts}
+              tradeSignals={tradeSignals}
             />
           </div>
-
           <div className="panels">
             <SessionLevelPanel levels={sessionLevels} sessionStatus={sessionStatus} />
             <SwingPanel swings={swings} />
             <SweepPanel sweeps={sweeps} />
             <MarketStructurePanel trend={trend} events={[...msEvents, ...breakouts]} />
+            <SignalPanel signals={tradeSignals} />
           </div>
         </>
       )}
@@ -246,4 +229,13 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function mergeCandles(completedCandles, lastClosedCandle) {
+  const map = new Map();
+  for (const candle of completedCandles || []) {
+    if (candle && Number.isFinite(candle.time)) map.set(candle.time, candle);
+  }
+  if (lastClosedCandle && Number.isFinite(lastClosedCandle.time)) map.set(lastClosedCandle.time, lastClosedCandle);
+  return [...map.values()].sort((a, b) => a.time - b.time);
 }
