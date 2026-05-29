@@ -9,6 +9,7 @@ import { SweepDetector } from './services/sweepDetector';
 import { MarketStructureDetector } from './services/marketStructure';
 import { BreakoutDetector } from './services/breakoutDetector';
 import { TradeSignalEngine } from './services/tradeSignalEngine';
+import { sendTelegramMessage, formatTradeSignalMessage, formatLimitHitMessage } from './services/telegram';
 
 import ChartView from './components/ChartView';
 import TimeframeSelector from './components/TimeframeSelector';
@@ -50,16 +51,40 @@ export default function App() {
   const brkRef = useRef(null);
   const signalRef = useRef(null);
   const activeTimeframeRef = useRef('m1');
+  const telegramSentRef = useRef(new Set());
 
   useEffect(() => {
     activeTimeframeRef.current = activeTimeframe;
   }, [activeTimeframe]);
 
+  const notifyTelegram = useCallback((key, message) => {
+    if (!key || !message || telegramSentRef.current.has(key)) return;
+
+    telegramSentRef.current.add(key);
+    sendTelegramMessage(message).then(result => {
+      if (!result.ok) {
+        console.warn('[telegram] Notify failed:', result.reason);
+      }
+    }).catch(err => {
+      console.warn('[telegram] Notify error:', err);
+    });
+  }, []);
+
   const handlePriceTouch = useCallback((price, timestamp) => {
     if (!signalRef.current) return;
+
     const hits = signalRef.current.checkLimitHits(price, timestamp);
-    if (hits.length > 0) setTradeSignals(signalRef.current.getHistory());
-  }, []);
+    if (hits.length === 0) return;
+
+    setTradeSignals(signalRef.current.getHistory());
+
+    hits.forEach(hit => {
+      notifyTelegram(
+        `limit_hit_${hit.signal.id}`,
+        formatLimitHitMessage(hit)
+      );
+    });
+  }, [notifyTelegram]);
 
   const analyzeTimeframe = useCallback((completedCandles, lastClosedCandle) => {
     if (!swRef.current || !sweepRef.current || !msRef.current || !brkRef.current) return;
@@ -97,9 +122,18 @@ export default function App() {
         timeframe: activeTimeframeRef.current,
       });
 
-      if (newSignals.length > 0) setTradeSignals(signalRef.current.getHistory());
+      if (newSignals.length > 0) {
+        setTradeSignals(signalRef.current.getHistory());
+
+        newSignals.forEach(signal => {
+          notifyTelegram(
+            `signal_${signal.id}`,
+            formatTradeSignalMessage(signal)
+          );
+        });
+      }
     }
-  }, []);
+  }, [notifyTelegram]);
 
   useEffect(() => {
     const key = getApiKey();
@@ -166,9 +200,14 @@ export default function App() {
 
   useEffect(() => {
     if (!cbRef.current || !tfRef.current) return;
+
     const activeCandles = activeTimeframe === 'm1' ? cbRef.current.getAllCandles() : tfRef.current.getCandles(activeTimeframe);
     setCandles(activeCandles);
-    const completed = activeTimeframe === 'm1' ? cbRef.current.getCandles() : activeCandles.filter(c => c.time !== activeCandles[activeCandles.length - 1]?.time);
+
+    const completed = activeTimeframe === 'm1'
+      ? cbRef.current.getCandles()
+      : activeCandles.filter(c => c.time !== activeCandles[activeCandles.length - 1]?.time);
+
     if (completed.length > 0) setSwings(swRef.current.processCandles(completed));
     else setSwings({ confirmed: [], candidates: [] });
   }, [activeTimeframe]);
@@ -176,11 +215,15 @@ export default function App() {
   const handleSettingsSave = (newSettings) => {
     setSettings(newSettings);
     saveSettings(newSettings);
+
     const key = getApiKey();
     setApiKey(key);
     setShowSettings(false);
+
     if (swRef.current) swRef.current.setStrength(newSettings.swingStrength);
-    if (key && socketRef.current && socketRef.current.getStatus() !== WS_STATUS.CONNECTED) socketRef.current.connect(key, 'XAU/USD');
+    if (key && socketRef.current && socketRef.current.getStatus() !== WS_STATUS.CONNECTED) {
+      socketRef.current.connect(key, 'XAU/USD');
+    }
   };
 
   return (
@@ -199,6 +242,7 @@ export default function App() {
       ) : (
         <>
           <TimeframeSelector active={activeTimeframe} onChange={setActiveTimeframe} />
+
           <div className="chart-container">
             <ChartView
               candles={candles}
@@ -210,6 +254,7 @@ export default function App() {
               tradeSignals={tradeSignals}
             />
           </div>
+
           <div className="panels">
             <SessionLevelPanel levels={sessionLevels} sessionStatus={sessionStatus} />
             <SwingPanel swings={swings} />
@@ -233,9 +278,14 @@ export default function App() {
 
 function mergeCandles(completedCandles, lastClosedCandle) {
   const map = new Map();
+
   for (const candle of completedCandles || []) {
     if (candle && Number.isFinite(candle.time)) map.set(candle.time, candle);
   }
-  if (lastClosedCandle && Number.isFinite(lastClosedCandle.time)) map.set(lastClosedCandle.time, lastClosedCandle);
+
+  if (lastClosedCandle && Number.isFinite(lastClosedCandle.time)) {
+    map.set(lastClosedCandle.time, lastClosedCandle);
+  }
+
   return [...map.values()].sort((a, b) => a.time - b.time);
 }
