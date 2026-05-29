@@ -39,6 +39,11 @@ export class TradeSignalEngine {
     const confirmation = [...msEvents, ...breakouts]
       .filter(event => event && event.time >= recentSweep.time && event.time <= candle.time)
       .filter(event => eventDirection(event) === direction)
+      .filter(event => {
+        // Only allow cleaner setups: BOS, CHoCH, Valid Break
+        const t = event.type || '';
+        return t.includes('bos') || t.includes('choch') || t.includes('valid_break');
+      })
       .sort((a, b) => b.time - a.time)[0];
 
     if (!confirmation) return [];

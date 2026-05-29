@@ -13,8 +13,11 @@ export class BreakoutDetector {
     this.resolvePendingBreaks(candle, previousCandles, events);
 
     const checkLevels = buildCheckLevels(levels, confirmedSwings);
+    let breakoutFound = false;
 
     for (const level of checkLevels) {
+      if (breakoutFound) break;
+      
       const levelId = level.id || `${level.name}_${level.price}`;
       if (this.brokenLevelIds.has(levelId)) continue;
       if (!Number.isFinite(level.price)) continue;
@@ -27,6 +30,7 @@ export class BreakoutDetector {
           this.history.push(event);
           this.brokenLevelIds.add(levelId);
           this.pendingBreaks.set(levelId, { ...event, status: 'watching' });
+          breakoutFound = true;
 
           if (quality.isStrong) {
             const validEvent = buildValidBreakEvent(levelId, level, candle, 'bullish', quality, 'strong_close');
@@ -44,6 +48,7 @@ export class BreakoutDetector {
           this.history.push(event);
           this.brokenLevelIds.add(levelId);
           this.pendingBreaks.set(levelId, { ...event, status: 'watching' });
+          breakoutFound = true;
 
           if (quality.isStrong) {
             const validEvent = buildValidBreakEvent(levelId, level, candle, 'bearish', quality, 'strong_close');
@@ -126,7 +131,30 @@ function buildCheckLevels(levels, confirmedSwings) {
   recentSH.forEach(s => checkLevels.push({ name: 'Swing High', price: s.price, type: 'resistance', id: `bsh_${s.time}` }));
   recentSL.forEach(s => checkLevels.push({ name: 'Swing Low', price: s.price, type: 'support', id: `bsl_${s.time}` }));
 
-  return checkLevels;
+  // Priority for filtering close levels
+  const priorityMap = {
+    'PDH': 1, 'PDL': 1,
+    'Asia High': 2, 'Asia Low': 2,
+    'London High': 3, 'London Low': 3,
+    'NY High': 4, 'NY Low': 4,
+    'Swing High': 5, 'Swing Low': 5
+  };
+
+  const filteredLevels = [];
+  const minDistance = 0.5; // Require 0.5 distance between valid levels
+
+  // Sort by priority (lower number = higher priority)
+  checkLevels.sort((a, b) => (priorityMap[a.name] || 99) - (priorityMap[b.name] || 99));
+
+  for (const level of checkLevels) {
+    // Check if there's already a higher priority level too close
+    const isTooClose = filteredLevels.some(l => l.type === level.type && Math.abs(l.price - level.price) < minDistance);
+    if (!isTooClose) {
+      filteredLevels.push(level);
+    }
+  }
+
+  return filteredLevels;
 }
 
 function buildBreakoutEvent(levelId, level, candle, direction, quality) {

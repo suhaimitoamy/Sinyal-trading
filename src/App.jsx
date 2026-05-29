@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getSettings, getApiKey, saveSettings } from './services/storage';
+import { getSettings, getApiKey, saveSettings, loadCandles, saveCandles } from './services/storage';
 import { TwelveDataSocket, WS_STATUS } from './services/twelveDataSocket';
 import { CandleBuilder } from './services/candleBuilder';
 import { TimeframeAggregator } from './services/timeframeAggregator';
@@ -40,6 +40,8 @@ export default function App() {
   const [breakouts, setBreakouts] = useState([]);
   const [tradeSignals, setTradeSignals] = useState([]);
   const [trend, setTrend] = useState('undefined');
+  const [activeTab, setActiveTab] = useState('signals');
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   const socketRef = useRef(null);
   const cbRef = useRef(null);
@@ -58,7 +60,8 @@ export default function App() {
   }, [activeTimeframe]);
 
   const notifyTelegram = useCallback((key, message) => {
-    if (!key || !message || telegramSentRef.current.has(key)) return;
+    // Disable telegram notifications until historical data is fully loaded
+    if (!isDataLoaded || !key || !message || telegramSentRef.current.has(key)) return;
 
     telegramSentRef.current.add(key);
     sendTelegramMessage(message).then(result => {
@@ -165,17 +168,66 @@ export default function App() {
 
     socketRef.current.onError((err) => setError(err));
 
+    // Async init function to load persisted data
+    const initData = async () => {
+      try {
+        const [m1, m5, m15, h1] = await Promise.all([
+          loadCandles('m1'),
+          loadCandles('m5'),
+          loadCandles('m15'),
+          loadCandles('h1')
+        ]);
+        
+        if (m1.length > 0) {
+          cbRef.current.setCandles(m1);
+          tfRef.current.setCandles('m5', m5);
+          tfRef.current.setCandles('m15', m15);
+          tfRef.current.setCandles('h1', h1);
+
+          // Rebuild analysis from loaded M1 candles
+          m1.forEach(c => slRef.current.processCandle(c));
+          setSessionLevels(slRef.current.getLevels());
+          setSessionStatus(slRef.current.getSessionStatus());
+          
+          if (activeTimeframeRef.current === 'm1') {
+             const activeC = m1;
+             for (let i = 1; i <= activeC.length; i++) {
+               const sliced = activeC.slice(0, i);
+               analyzeTimeframe(sliced, activeC[i - 1]);
+             }
+          } else {
+             const activeC = tfRef.current.getCandles(activeTimeframeRef.current);
+             for (let i = 1; i <= activeC.length; i++) {
+               const sliced = activeC.slice(0, i);
+               analyzeTimeframe(sliced, activeC[i - 1]);
+             }
+          }
+        }
+      } catch (err) {
+        console.error('[App] Failed to load persisted candles:', err);
+      } finally {
+        setIsDataLoaded(true);
+      }
+    };
+    initData();
+
     cbRef.current.onCandleUpdate(m1Candle => {
       if (activeTimeframeRef.current === 'm1') setCandles(cbRef.current.getAllCandles());
       tfRef.current.processM1Candle(m1Candle, false);
     });
 
     cbRef.current.onCandleClose(closedM1 => {
+      const sets = getSettings();
+      cbRef.current.trimCandles(sets.maxCandles || 5000);
       slRef.current.processCandle(closedM1);
       setSessionLevels(slRef.current.getLevels());
       setSessionStatus(slRef.current.getSessionStatus());
       tfRef.current.processM1Candle(closedM1, true);
-      if (activeTimeframeRef.current === 'm1') analyzeTimeframe(cbRef.current.getCandles(), closedM1);
+      
+      const allM1 = cbRef.current.getCandles();
+      saveCandles('m1', allM1).catch(e => console.warn('[App] M1 save failed:', e));
+      
+      if (activeTimeframeRef.current === 'm1') analyzeTimeframe(allM1, closedM1);
     });
 
     ['m5', 'm15', 'h1'].forEach(tf => {
@@ -183,11 +235,23 @@ export default function App() {
         if (activeTimeframeRef.current === tf) setCandles(tfRef.current.getCandles(tf));
       });
       tfRef.current.onCandleClose(tf, (closedCandle) => {
-        if (activeTimeframeRef.current === tf) analyzeTimeframe(tfRef.current.getCandles(tf), closedCandle);
+        const tfCandles = tfRef.current.getCandles(tf);
+        saveCandles(tf, tfCandles).catch(e => console.warn(`[App] ${tf} save failed:`, e));
+        if (activeTimeframeRef.current === tf) analyzeTimeframe(tfCandles, closedCandle);
       });
     });
 
+    // Periodic save for currently forming M1 candle so we don't lose the last minute of data on refresh
+    const periodicSaveInterval = setInterval(() => {
+      if (!cbRef.current) return;
+      const allM1 = cbRef.current.getAllCandles();
+      if (allM1.length > 0) {
+        saveCandles('m1', allM1).catch(e => console.warn('[App] Periodic M1 save failed:', e));
+      }
+    }, 15000);
+
     return () => {
+      clearInterval(periodicSaveInterval);
       if (socketRef.current) socketRef.current.destroy();
     };
   }, [analyzeTimeframe, handlePriceTouch]);
@@ -196,6 +260,32 @@ export default function App() {
     if (apiKey && socketRef.current && socketRef.current.getStatus() === WS_STATUS.DISCONNECTED) {
       socketRef.current.connect(apiKey, 'XAU/USD');
     }
+  }, [apiKey]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      if (apiKey && socketRef.current) {
+        // If we are currently disconnected or hit an error, attempt to reconnect
+        const status = socketRef.current.getStatus();
+        if (status === WS_STATUS.DISCONNECTED || status === WS_STATUS.ERROR) {
+          console.log('[App] Network online. Attempting to reconnect WebSocket...');
+          socketRef.current.reconnectAttempts = 0; // reset attempts for immediate reconnect
+          socketRef.current.reconnect();
+        }
+      }
+    };
+
+    const handleOffline = () => {
+      console.log('[App] Network offline. WebSocket will likely disconnect.');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, [apiKey]);
 
   useEffect(() => {
@@ -243,24 +333,39 @@ export default function App() {
         <>
           <TimeframeSelector active={activeTimeframe} onChange={setActiveTimeframe} />
 
-          <div className="chart-container">
-            <ChartView
-              candles={candles}
-              sessionLevels={sessionLevels}
-              swings={swings}
-              sweepEvents={sweeps}
-              msEvents={msEvents}
-              breakoutEvents={breakouts}
-              tradeSignals={tradeSignals}
-            />
-          </div>
+          {!isDataLoaded ? (
+             <div className="chart-container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+               <h3 style={{ color: 'var(--text-secondary)' }}>Loading historical data...</h3>
+             </div>
+          ) : (
+            <div className="chart-container">
+              <ChartView
+                candles={candles}
+                sessionLevels={sessionLevels}
+                swings={swings}
+                sweepEvents={sweeps}
+                msEvents={msEvents}
+                breakoutEvents={breakouts}
+                tradeSignals={tradeSignals}
+              />
+            </div>
+          )}
 
-          <div className="panels">
-            <SessionLevelPanel levels={sessionLevels} sessionStatus={sessionStatus} />
-            <SwingPanel swings={swings} />
-            <SweepPanel sweeps={sweeps} />
-            <MarketStructurePanel trend={trend} events={[...msEvents, ...breakouts]} />
-            <SignalPanel signals={tradeSignals} />
+          <div className="panels-container">
+            <div className="panel-tabs">
+              <button className={`tab-btn ${activeTab === 'signals' ? 'active' : ''}`} onClick={() => setActiveTab('signals')}>Signals</button>
+              <button className={`tab-btn ${activeTab === 'ms' ? 'active' : ''}`} onClick={() => setActiveTab('ms')}>Market Structure</button>
+              <button className={`tab-btn ${activeTab === 'sweeps' ? 'active' : ''}`} onClick={() => setActiveTab('sweeps')}>Sweeps</button>
+              <button className={`tab-btn ${activeTab === 'swings' ? 'active' : ''}`} onClick={() => setActiveTab('swings')}>Swings</button>
+              <button className={`tab-btn ${activeTab === 'sessions' ? 'active' : ''}`} onClick={() => setActiveTab('sessions')}>Sessions</button>
+            </div>
+            <div className="panel-content-area">
+              {activeTab === 'signals' && <SignalPanel signals={tradeSignals} />}
+              {activeTab === 'ms' && <MarketStructurePanel trend={trend} events={[...msEvents, ...breakouts]} />}
+              {activeTab === 'sweeps' && <SweepPanel sweeps={sweeps} />}
+              {activeTab === 'swings' && <SwingPanel swings={swings} />}
+              {activeTab === 'sessions' && <SessionLevelPanel levels={sessionLevels} sessionStatus={sessionStatus} />}
+            </div>
           </div>
         </>
       )}
