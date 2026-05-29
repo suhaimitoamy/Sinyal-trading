@@ -7,6 +7,8 @@
 // ---------------------------------------------------------------------------
 const SETTINGS_KEY = 'xau_settings';
 const API_KEY_KEY = 'xau_api_key';
+const TELEGRAM_BOT_TOKEN_KEY = 'xau_telegram_bot_token';
+const TELEGRAM_CHAT_ID_KEY = 'xau_telegram_chat_id';
 
 const DEFAULT_SETTINGS = {
   symbol: 'XAU/USD',
@@ -67,6 +69,26 @@ export function saveApiKey(key) {
     localStorage.setItem(API_KEY_KEY, key);
   } catch (err) {
     console.error('[storage] Failed to save API key:', err);
+  }
+}
+
+export function getTelegramSettings() {
+  try {
+    return {
+      botToken: localStorage.getItem(TELEGRAM_BOT_TOKEN_KEY) || '',
+      chatId: localStorage.getItem(TELEGRAM_CHAT_ID_KEY) || '',
+    };
+  } catch {
+    return { botToken: '', chatId: '' };
+  }
+}
+
+export function saveTelegramSettings(config) {
+  try {
+    localStorage.setItem(TELEGRAM_BOT_TOKEN_KEY, config.botToken || '');
+    localStorage.setItem(TELEGRAM_CHAT_ID_KEY, config.chatId || '');
+  } catch (err) {
+    console.error('[storage] Failed to save Telegram settings:', err);
   }
 }
 
