@@ -7,7 +7,8 @@ export default function ChartView({
   swings,
   sweepEvents,
   msEvents,
-  breakoutEvents
+  breakoutEvents,
+  tradeSignals
 }) {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -100,7 +101,7 @@ export default function ChartView({
     }
   }, [candles]);
 
-  // Price Lines (Session Levels & Swings)
+  // Price Lines (Session Levels, Swings, Trade Signals)
   useEffect(() => {
     if (!seriesRef.current) return;
     
@@ -122,7 +123,7 @@ export default function ChartView({
       { name: 'NY L', price: sessionLevels.nyLow, color: 'rgba(38, 166, 154, 0.5)' },
       { name: 'PDH', price: sessionLevels.prevDayHigh, color: 'rgba(239, 83, 80, 0.5)' },
       { name: 'PDL', price: sessionLevels.prevDayLow, color: 'rgba(239, 83, 80, 0.5)' },
-    ].filter(l => l.price != null);
+    ].filter(l => Number.isFinite(l.price));
 
     activeLevels.forEach(level => {
       const line = seriesRef.current.createPriceLine({
@@ -142,6 +143,8 @@ export default function ChartView({
     const recentSwings = allSwings.sort((a,b) => b.time - a.time).slice(0, 15);
     
     recentSwings.forEach(swing => {
+      if (!Number.isFinite(swing.price)) return;
+
       const isConfirmed = swing.status === 'confirmed';
       const color = swing.type === 'high' ? 
         (isConfirmed ? '#26a69a' : 'rgba(38, 166, 154, 0.4)') : 
@@ -157,9 +160,36 @@ export default function ChartView({
       });
       linesRef.current.push(line);
     });
-  }, [sessionLevels, swings]);
 
-  // Markers (Sweeps, BOS/CHoCH, Breakouts)
+    const activeSignals = [...(tradeSignals || [])]
+      .filter(signal => signal.status === 'waiting_limit' || signal.status === 'limit_hit')
+      .sort((a, b) => b.createdTime - a.createdTime)
+      .slice(0, 3);
+
+    activeSignals.forEach(signal => {
+      const signalColor = signal.side === 'sell' ? '#ef5350' : '#26a69a';
+      addSignalLine(signal.entryLow, signalColor, `${signal.type} Low`, 2);
+      addSignalLine(signal.entryHigh, signalColor, `${signal.type} High`, 2);
+      addSignalLine(signal.sl, '#f97316', 'SL', 1);
+      addSignalLine(signal.tp1, '#22d3ee', 'TP1', 1);
+      addSignalLine(signal.tp2, '#22d3ee', 'TP2', 1);
+    });
+
+    function addSignalLine(price, color, title, width) {
+      if (!Number.isFinite(price)) return;
+      const line = seriesRef.current.createPriceLine({
+        price,
+        color,
+        lineWidth: width,
+        lineStyle: 1,
+        axisLabelVisible: true,
+        title,
+      });
+      linesRef.current.push(line);
+    }
+  }, [sessionLevels, swings, tradeSignals]);
+
+  // Markers (Sweeps, BOS/CHoCH, Breakouts, Trade Signals)
   useEffect(() => {
     if (!seriesRef.current) return;
 
@@ -177,12 +207,15 @@ export default function ChartView({
     });
 
     [...(breakoutEvents || [])].forEach(ev => {
+      const isBullish = ev.direction === 'bullish' || ev.type === 'breakout_bullish' || ev.type === 'valid_break_bullish' || ev.type === 'fake_break_bullish';
+      const isValid = ev.type?.startsWith('valid_break');
+      const isFake = ev.type?.startsWith('fake_break');
       markers.push({
         time: ev.time,
-        position: ev.type === 'breakout_bullish' ? 'belowBar' : 'aboveBar',
-        color: '#22d3ee',
-        shape: ev.type === 'breakout_bullish' ? 'arrowUp' : 'arrowDown',
-        text: 'BRK',
+        position: isBullish ? 'belowBar' : 'aboveBar',
+        color: isValid ? '#22c55e' : isFake ? '#f97316' : '#22d3ee',
+        shape: isBullish ? 'arrowUp' : 'arrowDown',
+        text: isValid ? 'VALID' : isFake ? 'FAKE' : 'BRK',
       });
     });
 
@@ -196,6 +229,16 @@ export default function ChartView({
       });
     });
 
+    [...(tradeSignals || [])].forEach(signal => {
+      markers.push({
+        time: signal.createdTime,
+        position: signal.side === 'buy' ? 'belowBar' : 'aboveBar',
+        color: signal.side === 'buy' ? '#26a69a' : '#ef5350',
+        shape: signal.side === 'buy' ? 'arrowUp' : 'arrowDown',
+        text: signal.side === 'buy' ? 'BUY LIMIT' : 'SELL LIMIT',
+      });
+    });
+
     // Sort markers by time
     markers.sort((a, b) => a.time - b.time);
 
@@ -204,7 +247,7 @@ export default function ChartView({
     } catch (e) {
       console.warn('Failed to set markers:', e);
     }
-  }, [sweepEvents, msEvents, breakoutEvents]);
+  }, [sweepEvents, msEvents, breakoutEvents, tradeSignals]);
 
   return (
     <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
