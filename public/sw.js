@@ -1,5 +1,5 @@
 const CACHE_NAME = 'xau-chart-v1';
-const BASE_PATH = '/xau-market-structure-chart-pwa/';
+const BASE_PATH = '/Sinyal-trading/';
 
 const STATIC_ASSETS = [
   BASE_PATH,

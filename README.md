@@ -61,10 +61,10 @@ Everything runs in the browser — no backend, no server, no broker connection.
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/xau-market-structure-chart-pwa.git
+git clone https://github.com/<your-username>/Sinyal-trading.git
 
 # Navigate into the project
-cd xau-market-structure-chart-pwa
+cd Sinyal-trading
 
 # Install dependencies
 npm install
@@ -86,8 +86,8 @@ Vite will start a dev server on **http://localhost:3000** and automatically open
 ```
   VITE v5.4.x  ready in 300ms
 
-  ➜  Local:   http://localhost:3000/xau-market-structure-chart-pwa/
-  ➜  Network: http://192.168.x.x:3000/xau-market-structure-chart-pwa/
+  ➜  Local:   http://localhost:3000/Sinyal-trading/
+  ➜  Network: http://192.168.x.x:3000/Sinyal-trading/
 ```
 
 > [!TIP]
@@ -129,7 +129,7 @@ This will:
 3. GitHub Pages serves it at:
 
 ```
-https://<your-username>.github.io/xau-market-structure-chart-pwa/
+https://<your-username>.github.io/Sinyal-trading/
 ```
 
 ### Option B: Manual setup
@@ -141,7 +141,7 @@ https://<your-username>.github.io/xau-market-structure-chart-pwa/
 5. Save and wait for deployment.
 
 > [!IMPORTANT]
-> The Vite `base` path is set to `/xau-market-structure-chart-pwa/` in `vite.config.js`. If you rename the repo, update `base` to match the new repository name, then rebuild and redeploy.
+> The Vite `base` path is set to `/Sinyal-trading/` in `vite.config.js`. If you rename the repo, update `base` to match the new repository name, then rebuild and redeploy.
 
 ---
 
@@ -413,7 +413,7 @@ This tool helps you **see** market structure. Trading decisions are **yours alon
 ## 📁 Project Structure
 
 ```
-xau-market-structure-chart-pwa/
+Sinyal-trading/
 ├── index.html              # Entry point with PWA manifest & service worker registration
 ├── package.json            # Dependencies and scripts
 ├── vite.config.js          # Vite config (base path, dev server)
