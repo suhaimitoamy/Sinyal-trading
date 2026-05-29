@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { getSettings, saveSettings, getApiKey, saveApiKey, clearAllData } from '../services/storage';
+import {
+  getSettings,
+  saveSettings,
+  getApiKey,
+  saveApiKey,
+  getTelegramSettings,
+  saveTelegramSettings,
+  clearAllData,
+} from '../services/storage';
 
 export default function Settings({ onSave }) {
   const [apiKey, setApiKey] = useState('');
+  const [telegramConfig, setTelegramConfig] = useState({
+    botToken: '',
+    chatId: '',
+  });
   const [settings, setSettings] = useState({
     symbol: 'XAU/USD',
     displayTimezone: 'local',
@@ -12,6 +24,7 @@ export default function Settings({ onSave }) {
 
   useEffect(() => {
     setApiKey(getApiKey() || '');
+    setTelegramConfig(getTelegramSettings());
     setSettings(getSettings());
   }, []);
 
@@ -23,9 +36,18 @@ export default function Settings({ onSave }) {
     }));
   };
 
+  const handleTelegramChange = (e) => {
+    const { name, value } = e.target;
+    setTelegramConfig(prev => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     saveApiKey(apiKey);
+    saveTelegramSettings(telegramConfig);
     saveSettings(settings);
     if (onSave) onSave(settings);
   };
@@ -91,6 +113,39 @@ export default function Settings({ onSave }) {
               value={settings.maxCandles}
               onChange={handleChange}
             />
+          </div>
+
+
+          <div style={{ margin: '30px 0 20px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+            <h3 style={{ color: 'var(--accent-gold)', marginBottom: '15px' }}>Telegram Alert</h3>
+
+            <div className="form-group">
+              <label>Telegram Bot Token</label>
+              <input 
+                type="password" 
+                className="form-control" 
+                name="botToken"
+                value={telegramConfig.botToken}
+                onChange={handleTelegramChange}
+                placeholder="Paste your Telegram bot token here" 
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Telegram Chat ID</label>
+              <input 
+                type="text" 
+                className="form-control" 
+                name="chatId"
+                value={telegramConfig.chatId}
+                onChange={handleTelegramChange}
+                placeholder="Paste your Telegram chat ID here" 
+              />
+            </div>
+
+            <small style={{ color: 'var(--text-muted)' }}>
+              Telegram settings are stored locally in this browser.
+            </small>
           </div>
 
           <button type="submit" className="btn-primary">Save Settings</button>
