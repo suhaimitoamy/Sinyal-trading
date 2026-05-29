@@ -3,6 +3,7 @@ import React from 'react';
 export default function MarketStructurePanel({ trend, events }) {
   const sorted = [...events].sort((a, b) => b.time - a.time).slice(0, 10);
   const formatTime = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const formatPrice = (value) => Number.isFinite(value) ? value.toFixed(2) : '-';
 
   return (
     <div className="panel">
@@ -27,24 +28,15 @@ export default function MarketStructurePanel({ trend, events }) {
             </thead>
             <tbody>
               {sorted.map(ev => {
-                let badgeClass = '';
-                let label = '';
-                if (ev.type.includes('breakout')) {
-                  badgeClass = 'breakout';
-                  label = ev.type === 'breakout_bullish' ? 'Brk Bull' : 'Brk Bear';
-                } else if (ev.type === 'bos') {
-                  badgeClass = 'bos';
-                  label = ev.direction === 'bullish' ? 'BOS Bull' : 'BOS Bear';
-                } else if (ev.type === 'choch') {
-                  badgeClass = 'choch';
-                  label = ev.direction === 'bullish' ? 'CHoCH Bull' : 'CHoCH Bear';
-                }
+                const { badgeClass, label } = eventBadge(ev);
+                const price = ev.price ?? ev.breakoutPrice ?? ev.closePrice;
+                const level = ev.level ?? ev.levelPrice;
 
                 return (
                   <tr key={ev.id}>
                     <td><span className={`badge ${badgeClass}`}>{label}</span></td>
-                    <td>{ev.price ? ev.price.toFixed(2) : ev.breakoutPrice.toFixed(2)}</td>
-                    <td>{ev.level ? ev.level.toFixed(2) : ev.levelPrice.toFixed(2)}</td>
+                    <td>{formatPrice(price)}</td>
+                    <td>{formatPrice(level)}</td>
                     <td>{formatTime(ev.time)}</td>
                   </tr>
                 );
@@ -55,4 +47,21 @@ export default function MarketStructurePanel({ trend, events }) {
       </div>
     </div>
   );
+}
+
+function eventBadge(ev) {
+  if (ev.type === 'valid_break_bullish') return { badgeClass: 'valid-break', label: 'Valid Bull' };
+  if (ev.type === 'valid_break_bearish') return { badgeClass: 'valid-break', label: 'Valid Bear' };
+  if (ev.type === 'fake_break_bullish') return { badgeClass: 'fake-break', label: 'Fake Bull' };
+  if (ev.type === 'fake_break_bearish') return { badgeClass: 'fake-break', label: 'Fake Bear' };
+  if (ev.type?.includes('breakout')) {
+    return { badgeClass: 'breakout', label: ev.type === 'breakout_bullish' ? 'Brk Bull' : 'Brk Bear' };
+  }
+  if (ev.type === 'bos') {
+    return { badgeClass: 'bos', label: ev.direction === 'bullish' ? 'BOS Bull' : 'BOS Bear' };
+  }
+  if (ev.type === 'choch') {
+    return { badgeClass: 'choch', label: ev.direction === 'bullish' ? 'CHoCH Bull' : 'CHoCH Bear' };
+  }
+  return { badgeClass: 'badge-outline', label: ev.type || '-' };
 }
